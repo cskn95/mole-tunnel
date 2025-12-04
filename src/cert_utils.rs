@@ -4,7 +4,6 @@ use anyhow::{Context, Result};
 use quinn::{Endpoint, ServerConfig};
 use rcgen::generate_simple_self_signed;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rustls::{ClientConfig, ProtocolVersion};
 
 pub fn generate_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
     let cert = generate_simple_self_signed(vec!["localhost".to_string()])
