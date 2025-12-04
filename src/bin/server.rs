@@ -9,12 +9,10 @@ const SERVER_ADDR: SocketAddr = SocketAddr::new(LOCALHOST_V4, 5000);
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (cert, key) = cert_utils::generate_cert()?;
-    let server_config = ServerConfig::with_single_cert(vec![cert], key)?;
-    let endpoint = Endpoint::server(server_config, SERVER_ADDR)?;
+    let (endpoint, cert) = cert_utils::make_server_endpoint(SERVER_ADDR)?;
 
     while let Some(conn) = endpoint.accept().await {
-        let connection = conn.await?;
+
 
     }
 
