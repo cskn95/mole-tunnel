@@ -1,5 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use anyhow::Result;
+use quinn::Connection;
+use tokio::net::TcpListener;
 use tracing::{info, error};
 
 use the_tunnel::cert_utils;
@@ -7,6 +9,7 @@ use the_tunnel::cert_utils;
 const LOCALHOST_V4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 const CLIENT_ADDR: SocketAddr = SocketAddr::new(LOCALHOST_V4, 3131);
 const SERVER_ADDR: SocketAddr = SocketAddr::new(LOCALHOST_V4, 5000);
+const PACKAGE: &str = "Hello, server!";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,17 +30,22 @@ async fn main() -> Result<()> {
         .await?;
     info!("Connected to the server");
 
-    let (mut send_stream) = connection.open_uni()
+    let mut send_stream = connection.open_uni()
         .await
         .inspect_err(|e| error!("Failed to open two-way stream: {}", e))?;
     info!("Streams opened");
 
-    send_stream.write_all(b"Hello, server!")
+    send_stream.write_all(PACKAGE.as_bytes())
         .await
         .inspect_err(|e| error!("Failed to send the package: {}", e))?;
-    info!("Package sent");
+    info!("Sending the package");
 
     send_stream.finish()?;
-
+    info!("Package sent");
+    
+    endpoint.wait_idle().await;
+    connection.close(0u32.into(), b"done");
+    info!("Client shutting down gracefully");
+    
     Ok(())
 }

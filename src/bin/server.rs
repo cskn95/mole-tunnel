@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use anyhow::Result;
+use tokio::io::AsyncWriteExt;
 use tracing::{info, error};
 
 use the_tunnel::cert_utils;
@@ -25,20 +26,26 @@ async fn main() -> Result<()> {
         info!("New connection: {}", conn.remote_address());
 
         tokio::spawn(async move {
-            let client = conn.await
+            let client = conn
+                .await
                 .inspect_err(|e| error!("I have no idea about what the fuck is going on but here's the error: {}", e))
                 .unwrap();
 
-            while let Ok((mut recv_stream)) = client.accept_uni().await {
-                info!("Connection established");
+            let mut recv_stream = client
+                .accept_uni()
+                .await
+                .inspect_err(|e| error!("Connection failed: {}", e))
+                .unwrap();
+            info!("Connection established");
 
-                let buf = recv_stream.read_to_end(usize::MAX).await
-                    .inspect_err(|e| error!("Failed to read from stream: {}", e)).unwrap();
-
-                let package = String::from_utf8(buf)
-                    .inspect_err(|e| error!("Failed to parse package: {}", e)).unwrap();
-                info!("Received package: {}", package);
-            }
+            let package = recv_stream
+                .read_to_end(usize::MAX)
+                .await
+                .inspect_err(|e| error!("Failed to read the package: {}", e))
+                .unwrap();
+            tokio::io::stdout().write_all(&package).await.unwrap();
+            tokio::io::stdout().write_all(b"\n").await.unwrap();
+            tokio::io::stdout().flush().await.unwrap();
         });
     }
 

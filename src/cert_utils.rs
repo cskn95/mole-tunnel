@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use anyhow::{Context, Result};
-use quinn::{Endpoint, ServerConfig};
+use quinn::{Endpoint, RecvStream, ServerConfig};
 use rcgen::generate_simple_self_signed;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
@@ -37,9 +37,28 @@ pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Certific
     Ok((endpoint, server_cert))
 }
 
-pub fn configure_server() -> Result<(quinn::ServerConfig, CertificateDer<'static>)> {
+pub fn configure_server() -> Result<(ServerConfig, CertificateDer<'static>)> {
     let (cert, key) = generate_cert()?;
 
-    let mut server_config = ServerConfig::with_single_cert(vec![cert.clone()], key)?;
+    let server_config = ServerConfig::with_single_cert(vec![cert.clone()], key)?;
     Ok((server_config, cert))
+}
+
+pub async fn handle_recv(mut recv_stream: RecvStream) -> Result<String> {
+    let buf = recv_stream
+        .read_to_end(usize::MAX)
+        .await
+        .context("Failed to read from the stream")?;
+
+    let package = String::from_utf8(buf)
+        .context("Failed to parse the package as UTF-8")?;
+
+    Ok(package)
+}
+
+pub async fn handle_send(mut send_stream: quinn::SendStream, package: &str) -> Result<()> {
+    send_stream.write_all(package.as_bytes())
+        .await
+        .context( "Failed to send the package")?;
+    Ok(())
 }
