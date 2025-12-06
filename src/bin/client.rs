@@ -1,7 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use anyhow::Result;
-use quinn::Connection;
-use tokio::net::TcpListener;
+use pcap::{Capture, Device};
+use pnet::packet::ethernet::EthernetPacket;
+use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::Packet;
+use pnet::packet::tcp::TcpPacket;
 use tracing::{info, error};
 
 use the_tunnel::cert_utils;
@@ -17,6 +20,10 @@ async fn main() -> Result<()> {
         .init();
     info!("Client initializing");
 
+    let device = Device::lookup()
+        .expect("Failed to find the network interface")
+        .expect("Failed to open the network interface");
+
     let cert = std::fs::read("cert.der")
         .inspect_err(|e| error!("Failed to read the certificate: {}", e))?;
     info!("Certificate successfully read");
@@ -29,6 +36,39 @@ async fn main() -> Result<()> {
         .inspect_err(|e| error!("Failed to connect to the server: {}", e))?
         .await?;
     info!("Connected to the server");
+
+    let sniff_handle = tokio::task::spawn_blocking(move || {
+        let mut cap = Capture::from_device(device)
+            .unwrap()
+            .promisc(true)
+            .snaplen(65535)
+            .timeout(1000)
+            .open()
+            .expect("Failed to open the network interface");
+
+        cap
+            .filter("tcp port 80 or tcp port 443", true)
+            .expect("Filter failed");
+        info!("Sniffing started");
+
+        loop {
+            match cap.next_packet() {
+                Ok(packet) => {
+                    if let Some(ethernet) = EthernetPacket::new(packet.data) {
+                        // IP paketini al
+                        if let Some(ip) = Ipv4Packet::new(ethernet.payload()) {
+                            info!("Kaynak IP: {} -> Hedef IP: {}",ip.get_source(),ip.get_destination());
+
+                            if let Some(tcp) = TcpPacket::new(ip.payload()) {
+                                info!("Port: {} -> {}",tcp.get_source(),tcp.get_destination());
+                            }
+                        }
+                    }
+                },
+                Err(e) => error!("Failed to capture a packet: {}", e),
+            }
+        }
+    });
 
     let mut send_stream = connection.open_uni()
         .await

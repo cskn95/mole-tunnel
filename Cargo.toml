@@ -12,3 +12,5 @@ rcgen = {version = "0.14.5"}
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+pcap = "2.4.0"
+pnet = "0.35.0"
