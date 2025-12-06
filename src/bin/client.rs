@@ -1,18 +1,17 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use anyhow::Result;
+use bytes::Bytes;
 use pcap::{Capture, Device};
-use pnet::packet::ethernet::EthernetPacket;
-use pnet::packet::ipv4::Ipv4Packet;
-use pnet::packet::Packet;
-use pnet::packet::tcp::TcpPacket;
 use tracing::{info, error};
 
 use the_tunnel::cert_utils;
+use the_tunnel::cert_utils::{connector, listener};
 
 const LOCALHOST_V4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 const CLIENT_ADDR: SocketAddr = SocketAddr::new(LOCALHOST_V4, 3131);
 const SERVER_ADDR: SocketAddr = SocketAddr::new(LOCALHOST_V4, 5000);
-const PACKAGE: &str = "Hello, server!";
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,9 +19,13 @@ async fn main() -> Result<()> {
         .init();
     info!("Client initializing");
 
+    let (tx_http, rx_http) = tokio::sync::mpsc::channel::<Bytes>(4096);
+    let (tx_dns, rx_dns) = tokio::sync::mpsc::channel::<Bytes>(4096);
+
     let device = Device::lookup()
         .expect("Failed to find the network interface")
         .expect("Failed to open the network interface");
+    let device_name = Arc::new(device.name);
 
     let cert = std::fs::read("cert.der")
         .inspect_err(|e| error!("Failed to read the certificate: {}", e))?;
@@ -32,60 +35,29 @@ async fn main() -> Result<()> {
         .inspect_err(|e| error!("Failed to initialize the client endpoint: {}", e))?;
     info!("Client endpoint initialized");
 
-    let connection = endpoint.connect(SERVER_ADDR, "localhost")
-        .inspect_err(|e| error!("Failed to connect to the server: {}", e))?
-        .await?;
+    let connection = Arc::new(
+        endpoint.connect(SERVER_ADDR, "localhost")
+            .inspect_err(|e| error!("Failed to connect to the server: {}", e))?
+            .await?
+    );
     info!("Connected to the server");
 
-    let sniff_handle = tokio::task::spawn_blocking(move || {
-        let mut cap = Capture::from_device(device)
-            .unwrap()
-            .promisc(true)
-            .snaplen(65535)
-            .timeout(1000)
-            .open()
-            .expect("Failed to open the network interface");
+    let dev_name_http = device_name.clone();
+    let dev_name_dns = device_name.clone();
 
-        cap
-            .filter("tcp port 80 or tcp port 443", true)
-            .expect("Filter failed");
-        info!("Sniffing started");
+    let conn_http = connection.clone();
+    let conn_dns = connection.clone();
 
-        loop {
-            match cap.next_packet() {
-                Ok(packet) => {
-                    if let Some(ethernet) = EthernetPacket::new(packet.data) {
-                        // IP paketini al
-                        if let Some(ip) = Ipv4Packet::new(ethernet.payload()) {
-                            info!("Kaynak IP: {} -> Hedef IP: {}",ip.get_source(),ip.get_destination());
+    listener(dev_name_http, "tcp port 80 or tcp port 443 or udp port 443".to_string(), tx_http, "HTTP".to_string());
+    listener(dev_name_dns, "tcp port 53 or udp port 53".to_string(), tx_dns, "DNS".to_string());
 
-                            if let Some(tcp) = TcpPacket::new(ip.payload()) {
-                                info!("Port: {} -> {}",tcp.get_source(),tcp.get_destination());
-                            }
-                        }
-                    }
-                },
-                Err(e) => error!("Failed to capture a packet: {}", e),
-            }
-        }
-    });
+    connector(conn_http, rx_http, "HTTP".to_string()).await;
+    connector(conn_dns, rx_dns, "DNS".to_string()).await;
 
-    let mut send_stream = connection.open_uni()
-        .await
-        .inspect_err(|e| error!("Failed to open two-way stream: {}", e))?;
-    info!("Streams opened");
+    tokio::signal::ctrl_c().await?;
 
-    send_stream.write_all(PACKAGE.as_bytes())
-        .await
-        .inspect_err(|e| error!("Failed to send the package: {}", e))?;
-    info!("Sending the package");
-
-    send_stream.finish()?;
-    info!("Package sent");
-    
-    endpoint.wait_idle().await;
-    connection.close(0u32.into(), b"done");
-    info!("Client shutting down gracefully");
+    info!("Closing the connection");
+    connection.close(0u32.into(), b"bye");
     
     Ok(())
 }

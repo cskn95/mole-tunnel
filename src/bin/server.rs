@@ -1,8 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use anyhow::Result;
-use tokio::io::AsyncWriteExt;
 use tracing::{info, error};
-
+//use tracing_subscriber::EnvFilter;
 use the_tunnel::cert_utils;
 const LOCALHOST_V4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 const SERVER_ADDR: SocketAddr = SocketAddr::new(LOCALHOST_V4, 5000);
@@ -38,14 +37,25 @@ async fn main() -> Result<()> {
                 .unwrap();
             info!("Connection established");
 
-            let package = recv_stream
-                .read_to_end(usize::MAX)
-                .await
-                .inspect_err(|e| error!("Failed to read the package: {}", e))
-                .unwrap();
-            tokio::io::stdout().write_all(&package).await.unwrap();
-            tokio::io::stdout().write_all(b"\n").await.unwrap();
-            tokio::io::stdout().flush().await.unwrap();
+            loop {
+                let mut len_buf = [0u8; 4];
+                match recv_stream.read_exact(&mut len_buf).await {
+                    Ok(_) => {
+                        let msg_len = u32::from_be_bytes(len_buf) as usize;
+                        let mut packet_buf = vec![0u8; msg_len];
+
+                        match recv_stream.read_exact(&mut packet_buf).await {
+                            Ok(_) => {
+                                info!("Received a package: {} bytes", msg_len);
+                            }
+                            Err(_) => {
+                                error!("Failed to receive a package");
+                            }
+                        }
+                    },
+                    Err(e) => error!("{}", e)
+                }
+            }
         });
     }
 

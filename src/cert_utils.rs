@@ -1,9 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use anyhow::{Context, Result};
-use quinn::{Endpoint, RecvStream, ServerConfig};
+use bytes::Bytes;
+use pcap::{Capture, Device};
+use quinn::{Connection, Endpoint, RecvStream, ServerConfig};
 use rcgen::generate_simple_self_signed;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use tracing::{error, info};
 
 pub fn generate_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
     let cert = generate_simple_self_signed(vec!["localhost".to_string()])
@@ -61,4 +64,64 @@ pub async fn handle_send(mut send_stream: quinn::SendStream, package: &str) -> R
         .await
         .context( "Failed to send the package")?;
     Ok(())
+}
+
+pub fn listener(dev_name: Arc<String>, filter: String, tx: tokio::sync::mpsc::Sender<Bytes>, label: String) {
+    tokio::task::spawn_blocking(move || {
+        let dev = Device::from(dev_name.as_str());
+        let mut cap = Capture::from_device(dev)
+            .unwrap()
+            .promisc(true)
+            .snaplen(65535)
+            .timeout(1000)
+            .open()
+            .inspect_err(|e| error!("[{}] failed to open the network interface: {}", label, e))
+            .unwrap();
+
+        cap
+            .filter(filter.as_str(), true)
+            .inspect_err(|e| error!("[{}] filter failed: {}", label, e))
+            .unwrap();
+        info!("[{}] sniffing started", label);
+
+        loop {
+            match cap.next_packet() {
+                Ok(_packet) => {
+                    let data = Bytes::copy_from_slice(_packet.data);
+
+                    if let Err(_) = tx.blocking_send(data) {
+                        error!("[{}] failed to send a packet via mpsc channel", label);
+                    }
+                },
+                Err(pcap::Error::TimeoutExpired) => continue,
+                Err(e) => error!("[{}] ailed to capture a packet: {}", label, e),
+            }
+        }
+    });
+}
+
+pub async fn connector(conn:Arc<Connection>, mut rx: tokio::sync::mpsc::Receiver<Bytes>, label: String) {
+    tokio::spawn(async move {
+        let mut send_stream = conn.open_uni()
+            .await
+            .inspect_err(|e| error!("[{}] failed to open two-way stream: {}", label, e))
+            .unwrap();
+        info!("[{}] stream opened", label);
+
+        while let Some(data) = rx.recv().await {
+            let len = data.len();
+            let len_bytes = (len as u32).to_be_bytes();
+
+            if let Err(_) = send_stream.write_all(&len_bytes).await {
+                error!("[{}] failed to fetch the length of the package", label);
+                break;
+            }
+
+            if let Err(_) = send_stream.write_all(&data).await {
+                error!("[{}] failed to send the package", label);
+                break;
+            }
+            info!("[{}] sending a package", label);
+        }
+    });
 }
